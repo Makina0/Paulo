@@ -1,0 +1,277 @@
+#include <Sodaq_RN2483.h>
+#include <Time.h>  
+#include <TimeLib.h>
+
+#define debugSerial SerialUSB
+#define loraSerial Serial2
+
+
+#define NIBBLE_TO_HEX_CHAR(i) ((i <= 9) ? ('0' + i) : ('A' - 10 + i))
+#define HIGH_NIBBLE(i) ((i >> 4) & 0x0F)
+#define LOW_NIBBLE(i) (i & 0x0F)
+
+//Use OTAA, set to false to use ABP
+bool OTAA = false;
+
+// ABP
+// USE YOUR OWN KEYS!
+const uint8_t devAddr[4] =
+{   xxxx };
+
+// USE YOUR OWN KEYS!
+const uint8_t appSKey[16] =
+{ xxxx };
+
+// USE YOUR OWN KEYS!
+const uint8_t nwkSKey[16] =
+{xxxx };
+
+// OTAA
+// With using the GetHWEUI() function the HWEUI will be used
+static uint8_t DevEUI[8]
+{  xxx };
+const uint8_t AppEUI[8] =
+{ xxx };
+const uint8_t AppKey[16] =
+{ xxx };
+
+// Reception buffer
+uint8_t frameReceived[255] ;
+uint8_t regar[1] = {0x01};
+uint8_t pararegar[1] = {0x02};
+
+void setup() 
+{
+  delay(1000);
+  debugSerial.println("Ready");
+  debugSerial.println("select 1 for Regar ");
+  debugSerial.println("select 2 for Parar");
+
+  pinMode(A0, OUTPUT);
+  pinMode(A1, OUTPUT);
+  pinMode(A2, OUTPUT);
+  pinMode(A5, OUTPUT);
+  
+  while ((!debugSerial) && (millis() < 10000)){
+    // Wait 10 seconds for debugSerial to open
+  }
+
+  debugSerial.println("Start");
+
+  // Start streams
+  debugSerial.begin(57600);
+  loraSerial.begin(LoRaBee.getDefaultBaudRate());
+
+  LoRaBee.setDiag(debugSerial); // to use debug remove //DEBUG inside library
+  LoRaBee.init(loraSerial, LORA_RESET);
+
+  //Use the Hardware EUI
+  getHWEUI();
+
+  // Print the Hardware EUI
+  debugSerial.print("LoRa HWEUI: ");
+  for (uint8_t i = 0; i < sizeof(DevEUI); i++) {
+    debugSerial.print((char)NIBBLE_TO_HEX_CHAR(HIGH_NIBBLE(DevEUI[i])));
+    debugSerial.print((char)NIBBLE_TO_HEX_CHAR(LOW_NIBBLE(DevEUI[i])));
+  }
+  debugSerial.println();  
+  
+  setupLoRa();
+}
+
+void setupLoRa(){
+  if(!OTAA){
+    // ABP
+    setupLoRaABP();
+  } else {
+    //OTAA
+    setupLoRaOTAA();
+  }
+  // Uncomment this line to for the RN2903 with the Actility Network
+  // For OTAA update the DEFAULT_FSB in the library
+  // LoRaBee.setFsbChannels(1);
+
+  LoRaBee.setSpreadingFactor(9);
+}
+
+void setupLoRaABP(){  
+  if (LoRaBee.initABP(loraSerial, devAddr, appSKey, nwkSKey, true))
+  {
+    debugSerial.println("Communication to LoRaBEE successful.");
+  }
+  else
+  {
+    debugSerial.println("Communication to LoRaBEE failed!");
+  }
+}
+
+void setupLoRaOTAA() {
+
+  if (LoRaBee.initOTA(loraSerial, DevEUI, AppEUI, AppKey, false))
+  {
+    debugSerial.println("Network connection successful.");
+    // Turn on the blue led to indicate a succesfull connection
+    digitalWrite(LED_BUILTIN, HIGH) ;
+  }
+  else
+  {
+    debugSerial.println("Network connection failed!");
+    // Turn off the blue led to indicate a bad connection
+    for(int i=0; i<10; i++){
+      digitalWrite(LED_BUILTIN, HIGH) ;
+      delay(100);
+      digitalWrite(LED_BUILTIN, LOW) ;
+      delay(100);
+    }
+  }
+}
+
+void loop() {
+  // Get temperature in celcius 
+  debugSerial.println("Sending payload: Date; Time;  Temp; ");
+   String reading = stringData();
+   debugSerial.println(reading);
+  
+  // Send the data over LoRa
+  sendMsg(reading);
+  
+  // Directly after, check for a downlink
+  int frameReceivedSize = LoRaBee.receive(frameReceived, sizeof(frameReceived)) ;
+  
+  // If the frames received is greater than 1, we have data.
+  if (frameReceivedSize > 1) 
+  {
+      digitalWrite(LED_BUILTIN, LOW) ;
+      delay(200);
+      digitalWrite(LED_BUILTIN, HIGH) ;
+      debugSerial.println("Downlink received : ") ;
+      
+      // Compare the byte array with the predefined commands : toastRare, toastMedium, toastWellDone
+    if (ByteArrayCompare(regar, frameReceived, frameReceivedSize)) 
+    {
+      debugSerial.println("Pronto para Regar");
+      delay(100);
+      digitalWrite(A0, HIGH);
+      digitalWrite(A1, HIGH);
+      digitalWrite(A2, LOW);
+      digitalWrite(A5, HIGH);
+
+      delay(1000);
+      
+      digitalWrite(A5, LOW);
+      debugSerial.println("Está a regar");
+    } 
+    else if (ByteArrayCompare(pararegar, frameReceived, frameReceivedSize)) 
+    {
+      debugSerial.println("Pronto para Parar");
+      delay(100);
+      digitalWrite(A0, HIGH);
+      digitalWrite(A1, LOW);
+      digitalWrite(A2, HIGH);
+      digitalWrite(A5, HIGH);
+
+      delay(1000);
+      
+      digitalWrite(A5, LOW);
+      debugSerial.println("Já parou de regar");
+    } 
+  
+    else {
+    // Print out the data that wasn't recognized as a command
+    for (int i = 0; i < frameReceivedSize; i++)
+    {
+      debugSerial.print(frameReceived[i], HEX);
+      debugSerial.print(" ");
+    }
+    }
+  }
+
+  debugSerial.println("");
+  
+  // Change this delay depending how fast respons you may want to have
+  delay(60000);
+}
+
+void sendMsg(String msg) {
+  switch (LoRaBee.send(1, (uint8_t*)msg.c_str(), msg.length()))
+  {
+    case NoError:
+      debugSerial.println("Successful transmission.");
+      break;
+    case NoResponse:
+      debugSerial.println("There was no response from the device.");
+      break;
+    case Timeout:
+      debugSerial.println("Connection timed-out. Check your serial connection to the device! Sleeping for 20sec.");
+      delay(20000);
+      break;
+    case PayloadSizeError:
+      debugSerial.println("The size of the payload is greater than allowed. Transmission failed!");
+      break;
+    case InternalError:
+      debugSerial.println("Oh No! This shouldn't happen. Something is really wrong! The program will reset the RN module.");
+      setupLoRaOTAA();
+      break;
+    case Busy:
+      debugSerial.println("The device is busy. Sleeping for 10 extra seconds.");
+      delay(10000);
+      break;
+    case NetworkFatalError:
+      debugSerial.println("There is a non-recoverable error with the network connection. The program will reset the RN module.");
+      setupLoRaOTAA();
+      break;
+    case NotConnected:
+      debugSerial.println("The device is not connected to the network. The program will reset the RN module.");
+      setupLoRa();
+      break;
+    case NoAcknowledgment:
+      debugSerial.println("There was no acknowledgment sent back!");
+      break;
+    default:
+      break;
+  }
+}
+
+// Compares two byte arrays, returns true if they are equal and false if not.
+boolean ByteArrayCompare(byte a[], byte b[], int array_size)
+{
+  for (int i = 0; i < array_size; ++i)
+    if (a[i] != b[i])
+      return (false);
+  return (true);
+}
+
+
+String getTemperature()
+{
+  //10mV per C, 0C is 500mV
+  float mVolts = (float)analogRead(TEMP_SENSOR) * 3300.0 / 1023.0;
+  float temp = (mVolts - 500.0) / 10.0;
+
+  return String(temp);
+}
+
+
+static void getHWEUI()
+{
+  uint8_t len = LoRaBee.getHWEUI(DevEUI, sizeof(DevEUI));
+}
+
+String stringData()
+{
+String string002 = String(year());
+String string003 = String(string002 + "-");
+String string004 = String(string003 + month());
+String string005 = String(string004 + "-");
+String string006 = String(string005 + day());
+String string007 = String(string006 + "T");
+String string008 = String(string007 + hour());
+String string009 = String(string008 + ":");
+String string010 = String(string009 + minute());
+String string011 = String(string010 + ":");
+String string012 = String(string011 + second());
+String string013 = String(string012 + " Temp:");
+String string014 = String(string013 + getTemperature());
+
+return String (string014);
+}
